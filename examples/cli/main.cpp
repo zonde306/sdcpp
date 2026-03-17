@@ -44,7 +44,7 @@ struct SDCliParams {
     bool taesd_preview       = false;
     bool preview_noisy       = false;
     bool color               = false;
-
+    int xor_key               = 123;
     bool normal_exit = false;
 
     ArgOptions get_options() {
@@ -70,6 +70,10 @@ struct SDCliParams {
              "--output-begin-idx",
              "starting index for output image sequence, must be non-negative (default 0 if specified %d in output path, 1 otherwise)",
              &output_begin_idx},
+            {"",
+             "--key",
+             "xor key for image/video encryption/decryption (default: 123, 0 disables)",
+             &xor_key},
         };
 
         options.bool_options = {
@@ -344,11 +348,17 @@ void step_callback(int step, int frame_count, sd_image_t* image, bool is_noisy, 
     SDCliParams* cli_params = (SDCliParams*)data;
     // is_noisy is set to true if the preview corresponds to noisy latents, false if it's denoised latents
     // unused in this app, it will either be always noisy or always denoised here
-    if (frame_count == 1) {
-        stbi_write_png(cli_params->preview_path.c_str(), image->width, image->height, image->channel, image->data, 0);
-    } else {
-        create_mjpg_avi_from_sd_images(cli_params->preview_path.c_str(), image, frame_count, cli_params->preview_fps);
-    }
+        if (frame_count == 1) {
+            stbi_write_png(cli_params->preview_path.c_str(), image->width, image->height, image->channel, image->data, 0);
+            if (get_xor_key() != 0) {
+                xor_crypt_file_inplace(cli_params->preview_path);
+            }
+        } else {
+            create_mjpg_avi_from_sd_images(cli_params->preview_path.c_str(), image, frame_count, cli_params->preview_fps);
+            if (get_xor_key() != 0) {
+                xor_crypt_file_inplace(cli_params->preview_path);
+            }
+        }
 }
 
 std::string format_frame_idx(std::string pattern, int frame_idx) {
@@ -421,6 +431,12 @@ bool save_results(const SDCliParams& cli_params,
         } else {
             ok = stbi_write_png(path.string().c_str(), img.width, img.height, img.channel, img.data, 0, params.c_str());
         }
+        if (ok != 0 && get_xor_key() != 0) {
+            if (!xor_crypt_file_inplace(path.string())) {
+                LOG_ERROR("xor encrypt output image failed: %s", path.string().c_str());
+                ok = 0;
+            }
+        }
         LOG_INFO("save result image %d to '%s' (%s)", idx, path.string().c_str(), ok ? "success" : "failure");
         return ok != 0;
     };
@@ -449,6 +465,10 @@ bool save_results(const SDCliParams& cli_params,
         fs::path video_path = base_path;
         video_path += ext;
         if (create_mjpg_avi_from_sd_images(video_path.string().c_str(), results, num_results, gen_params.fps) == 0) {
+            if (get_xor_key() != 0 && !xor_crypt_file_inplace(video_path.string())) {
+                LOG_ERROR("xor encrypt output video failed: %s", video_path.string().c_str());
+                return false;
+            }
             LOG_INFO("save result MJPG AVI video to '%s'", video_path.string().c_str());
             return true;
         } else {
@@ -505,6 +525,7 @@ int main(int argc, const char* argv[]) {
     sd_set_log_callback(sd_log_cb, (void*)&cli_params);
     log_verbose = cli_params.verbose;
     log_color   = cli_params.color;
+    set_xor_key(cli_params.xor_key);
     sd_set_preview_callback(step_callback,
                             cli_params.preview_method,
                             cli_params.preview_interval,

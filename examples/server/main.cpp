@@ -97,6 +97,7 @@ struct SDSvrParams {
     bool normal_exit = false;
     bool verbose     = false;
     bool color       = false;
+    int xor_key      = 123;
 
     ArgOptions get_options() {
         ArgOptions options;
@@ -116,6 +117,10 @@ struct SDSvrParams {
              "--listen-port",
              "server listen port (default: 1234)",
              &listen_port},
+            {"",
+             "--xor-key",
+             "xor key for image encryption/decryption (default: 123, 0 disables)",
+             &xor_key},
         };
 
         options.bool_options = {
@@ -298,6 +303,7 @@ int main(int argc, const char** argv) {
     sd_set_log_callback(sd_log_cb, (void*)&svr_params);
     log_verbose = svr_params.verbose;
     log_color   = svr_params.color;
+    set_xor_key(svr_params.xor_key);
 
     LOG_DEBUG("version: %s", version_string().c_str());
     LOG_DEBUG("%s", sd_get_system_info());
@@ -552,8 +558,9 @@ int main(int argc, const char** argv) {
                     LOG_ERROR("write image to mem failed");
                     continue;
                 }
-
-                // base64 encode
+                if (get_xor_key() != 0) {
+                    xor_crypt_inplace(image_bytes.data(), image_bytes.size(), get_xor_key());
+                }
                 std::string b64 = base64_encode(image_bytes);
                 json item;
                 item["b64_json"] = b64;
@@ -799,6 +806,13 @@ int main(int argc, const char** argv) {
                                                          results[i].height,
                                                          results[i].channel,
                                                          output_compression);
+                if (image_bytes.empty()) {
+                    LOG_ERROR("write image to mem failed");
+                    continue;
+                }
+                if (get_xor_key() != 0) {
+                    xor_crypt_inplace(image_bytes.data(), image_bytes.size(), get_xor_key());
+                }
                 std::string b64 = base64_encode(image_bytes);
                 json item;
                 item["b64_json"] = b64;
@@ -1120,6 +1134,10 @@ int main(int argc, const char** argv) {
                 if (image_bytes.empty()) {
                     LOG_ERROR("write image to mem failed");
                     continue;
+                }
+
+                if (get_xor_key() != 0) {
+                    xor_crypt_inplace(image_bytes.data(), image_bytes.size(), get_xor_key());
                 }
 
                 std::string b64 = base64_encode(image_bytes);

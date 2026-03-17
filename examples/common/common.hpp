@@ -1,5 +1,6 @@
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <random>
@@ -204,6 +205,91 @@ static void log_printf(sd_log_level_t level, const char* file, int line, const c
 #define LOG_INFO(format, ...) log_printf(SD_LOG_INFO, __FILE__, __LINE__, format, ##__VA_ARGS__)
 #define LOG_WARN(format, ...) log_printf(SD_LOG_WARN, __FILE__, __LINE__, format, ##__VA_ARGS__)
 #define LOG_ERROR(format, ...) log_printf(SD_LOG_ERROR, __FILE__, __LINE__, format, ##__VA_ARGS__)
+
+static uint8_t g_xor_key = 123;
+
+static void set_xor_key(int key) {
+    g_xor_key = static_cast<uint8_t>(key & 0xFF);
+}
+
+static uint8_t get_xor_key() {
+    return g_xor_key;
+}
+
+static void xor_crypt_inplace(uint8_t* data, size_t size, uint8_t key) {
+    if (key == 0 || data == nullptr || size == 0) {
+        return;
+    }
+    for (size_t i = 0; i < size; ++i) {
+        data[i] ^= key;
+    }
+}
+
+static bool xor_crypt_file_inplace(const std::string& path, uint8_t key) {
+    if (key == 0) {
+        return true;
+    }
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in) {
+        LOG_ERROR("failed to open file for xor encryption: %s", path.c_str());
+        return false;
+    }
+    std::streamsize size = in.tellg();
+    if (size < 0) {
+        LOG_ERROR("failed to get file size for xor encryption: %s", path.c_str());
+        return false;
+    }
+    in.seekg(0, std::ios::beg);
+
+    std::vector<uint8_t> buffer(static_cast<size_t>(size));
+    if (size > 0 && !in.read(reinterpret_cast<char*>(buffer.data()), size)) {
+        LOG_ERROR("failed to read file for xor encryption: %s", path.c_str());
+        return false;
+    }
+    in.close();
+
+    xor_crypt_inplace(buffer.data(), buffer.size(), key);
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        LOG_ERROR("failed to open file for xor encryption output: %s", path.c_str());
+        return false;
+    }
+    if (!buffer.empty()) {
+        out.write(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+    }
+    if (!out) {
+        LOG_ERROR("failed to write file for xor encryption output: %s", path.c_str());
+        return false;
+    }
+    return true;
+}
+
+static bool xor_crypt_file_inplace(const std::string& path) {
+    return xor_crypt_file_inplace(path, g_xor_key);
+}
+
+static bool xor_crypt_stream_to_file(const std::string& path, const uint8_t* data, size_t size, uint8_t key) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        LOG_ERROR("failed to open file for xor encryption output: %s", path.c_str());
+        return false;
+    }
+    if (size > 0) {
+        std::vector<uint8_t> buffer(data, data + size);
+        xor_crypt_inplace(buffer.data(), buffer.size(), key);
+        out.write(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+    }
+    if (!out) {
+        LOG_ERROR("failed to write file for xor encryption output: %s", path.c_str());
+        return false;
+    }
+    return true;
+}
+
+static bool xor_crypt_stream_to_file(const std::string& path, const uint8_t* data, size_t size) {
+    return xor_crypt_stream_to_file(path, data, size, g_xor_key);
+}
 
 struct StringOption {
     std::string short_name;
@@ -1968,12 +2054,45 @@ uint8_t* load_image_common(bool from_memory,
     int c = 0;
     const char* image_path;
     uint8_t* image_buffer = nullptr;
+    std::vector<uint8_t> decrypted;
     if (from_memory) {
-        image_path   = "memory";
-        image_buffer = (uint8_t*)stbi_load_from_memory((const stbi_uc*)image_path_or_bytes, len, &width, &height, &c, expected_channel);
+        image_path = "memory";
+        if (len <= 0) {
+            LOG_ERROR("load image from '%s' failed", image_path);
+            return nullptr;
+        }
+        if (g_xor_key != 0) {
+            decrypted.resize(static_cast<size_t>(len));
+            memcpy(decrypted.data(), image_path_or_bytes, static_cast<size_t>(len));
+            xor_crypt_inplace(decrypted.data(), decrypted.size(), g_xor_key);
+            image_buffer = (uint8_t*)stbi_load_from_memory((const stbi_uc*)decrypted.data(), len, &width, &height, &c, expected_channel);
+        } else {
+            image_buffer = (uint8_t*)stbi_load_from_memory((const stbi_uc*)image_path_or_bytes, len, &width, &height, &c, expected_channel);
+        }
     } else {
-        image_path   = image_path_or_bytes;
-        image_buffer = (uint8_t*)stbi_load(image_path_or_bytes, &width, &height, &c, expected_channel);
+        image_path = image_path_or_bytes;
+        if (g_xor_key == 0) {
+            image_buffer = (uint8_t*)stbi_load(image_path_or_bytes, &width, &height, &c, expected_channel);
+        } else {
+            std::ifstream in(image_path_or_bytes, std::ios::binary | std::ios::ate);
+            if (!in) {
+                LOG_ERROR("load image from '%s' failed", image_path);
+                return nullptr;
+            }
+            std::streamsize size = in.tellg();
+            if (size < 0) {
+                LOG_ERROR("load image from '%s' failed", image_path);
+                return nullptr;
+            }
+            in.seekg(0, std::ios::beg);
+            decrypted.resize(static_cast<size_t>(size));
+            if (size > 0 && !in.read(reinterpret_cast<char*>(decrypted.data()), size)) {
+                LOG_ERROR("load image from '%s' failed", image_path);
+                return nullptr;
+            }
+            xor_crypt_inplace(decrypted.data(), decrypted.size(), g_xor_key);
+            image_buffer = (uint8_t*)stbi_load_from_memory((const stbi_uc*)decrypted.data(), static_cast<int>(decrypted.size()), &width, &height, &c, expected_channel);
+        }
     }
     if (image_buffer == nullptr) {
         LOG_ERROR("load image from '%s' failed", image_path);
