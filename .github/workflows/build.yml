@@ -109,6 +109,77 @@ jobs:
           path: |
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip
 
+  ubuntu-latest-cmake-cuda:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone
+        id: checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Dependencies
+        id: depends
+        run: |
+          sudo apt-get update
+          sudo apt-get install build-essential
+
+      - name: Install cuda-toolkit
+        id: cuda-toolkit
+        uses: Jimver/cuda-toolkit@v0.2.22
+        with:
+          cuda: "12.4.1"
+          method: "network"
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust"]'
+
+      - name: Build
+        id: cmake_build
+        run: |
+          mkdir build
+          cd build
+          cmake .. -DSD_CUDA=ON -DSD_BUILD_SHARED_LIBS=ON -DCMAKE_CUDA_ARCHITECTURES='61;70;75;80;86;89;90;100;120'
+          cmake --build . --config Release
+
+      - name: Get commit hash
+        id: commit
+        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
+        uses: prompt/actions-commit-hash@v2
+
+      - name: Fetch system info
+        id: system-info
+        run: |
+          echo "CPU_ARCH=`uname -m`" >> "$GITHUB_OUTPUT"
+          echo "OS_NAME=`lsb_release -s -i`" >> "$GITHUB_OUTPUT"
+          echo "OS_VERSION=`lsb_release -s -r`" >> "$GITHUB_OUTPUT"
+          echo "OS_TYPE=`uname -s`" >> "$GITHUB_OUTPUT"
+
+      - name: Pack artifacts
+        id: pack_artifacts
+        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
+        run: |
+          cp ggml/LICENSE ./build/bin/ggml.txt
+          cp LICENSE ./build/bin/stable-diffusion.cpp.txt
+          zip -j sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-cuda.zip ./build/bin/*
+
+      - name: Upload artifacts
+        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-cuda.zip
+          path: |
+            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-cuda.zip
+
   ubuntu-latest-cmake-vulkan:
     runs-on: ubuntu-latest
 
@@ -705,6 +776,7 @@ jobs:
 
     needs:
       - ubuntu-latest-cmake
+      - ubuntu-latest-cmake-cuda
       - ubuntu-latest-cmake-vulkan
       - ubuntu-latest-rocm
       - build-and-push-docker-images
